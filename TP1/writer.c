@@ -1,5 +1,5 @@
 /**
- * @file writer_talocchino.c
+ * @file writer.c
  *
  * @brief Writer for SOPG Practice 1
  *
@@ -18,13 +18,15 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#define FIFO_NAME   "fifo_tp1"
-#define MSG_SIGUSR1 "SIGN:1\n"
-#define MSG_SIGUSR2 "SIGN:2\n"
-#define DATA_HEADER "DATA:"
-#define INPUT_SIZE  (256)
+#define FIFO_NAME     "fifo_tp1"
+#define MSG_SIGUSR1   "SIGN:1"
+#define MSG_SIGUSR2   "SIGN:2"
+#define DATA_HEADER   "DATA:"
+#define HEADER_LENGTH (5)
+#define INPUT_SIZE    (256)
 
-int fifo_fd = 0;
+
+int fifo_fd;
 
 
 void sigusr_handler(int sig) {
@@ -52,7 +54,7 @@ int main(void) {
       exit(EXIT_FAILURE);
    }
 
-   puts("Got a readers");
+   puts("Got a reader");
 
    /* Setting up singnal handlers. */
    struct sigaction sa_sigusr = {
@@ -72,16 +74,15 @@ int main(void) {
       exit(EXIT_FAILURE);
    }
 
-
    char input_buf[INPUT_SIZE];
    strcpy(input_buf, DATA_HEADER);
-   const size_t data_header_len = strlen(DATA_HEADER);
-   char *input = input_buf + data_header_len;
+   char *input = input_buf + HEADER_LENGTH;
 
    while (1) {
       puts("Type a message:");
+      printf("> ");
 
-      if (fgets(input, sizeof(input_buf) - data_header_len, stdin) == NULL) {
+      if (fgets(input, sizeof(input_buf) - HEADER_LENGTH, stdin) == NULL) {
          perror("fgets");
          exit(EXIT_FAILURE);
       }

@@ -1,5 +1,5 @@
 /**
- * @file reader_talocchino.c
+ * @file reader.c
  *
  * @brief Reader for SOPG Practice 1
  *
@@ -25,11 +25,13 @@
 #define DATE_FMT             "[%D %T]"
 #define DATA_HEADER          "DATA:"
 #define SIGNAL_HEADER        "SIGN:"
+#define HEADER_LENGTH        (5)
 #define INPUT_SIZE           (256)
 #define LOG_SIZE             (512)
 #define DATE_SIZE            (32)
 
-int fifo_fd = 0;
+
+int fifo_fd;
 
 
 int main(void) {
@@ -83,28 +85,28 @@ int main(void) {
          perror("read");
          exit(EXIT_FAILURE);
       }
-
-      input_buf[read_count] = 0;
       
       time_t now = time(NULL);
      
       FILE *file;
-      if (memcmp(DATA_HEADER, input_buf, strlen(DATA_HEADER)) == 0) {
+      if (memcmp(DATA_HEADER, input_buf, HEADER_LENGTH) == 0) {
          file = log_data;
-      } else if (memcmp(SIGNAL_HEADER, input_buf, strlen(SIGNAL_HEADER)) == 0) {
+         input_buf[read_count] = 0;
+      } else if (memcmp(SIGNAL_HEADER, input_buf, HEADER_LENGTH) == 0) {
          file = log_signals;
+         input_buf[read_count] = '\n';
+         input_buf[read_count + 1] = 0;
       } else {
          file = NULL;
       }
 
-      char log_buf[LOG_SIZE];
       char timestamp_buf[DATE_SIZE];
       strftime(timestamp_buf, sizeof(timestamp_buf), DATE_FMT, localtime(&now));
-      snprintf(log_buf, sizeof(log_buf), "%s %s",timestamp_buf, input_buf);
-      printf(log_buf);
+      
+      printf("%s %s",timestamp_buf, input_buf);
 
       if (file != NULL) {
-         fputs(log_buf, file);
+         fprintf(file, "%s %s",timestamp_buf, input_buf + HEADER_LENGTH);
          fflush(file);
       }
    } 
