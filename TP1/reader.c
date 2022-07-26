@@ -21,7 +21,7 @@
 
 #define FIFO_NAME            "fifo_tp1"
 #define LOG_DATA_FILENAME    "log.txt"
-#define LOG_SIGNALS_FILENAME "singals.txt"
+#define LOG_SIGNALS_FILENAME "signals.txt"
 #define DATE_FMT             "[%D %T]"
 #define DATA_HEADER          "DATA:"
 #define SIGNAL_HEADER        "SIGN:"
