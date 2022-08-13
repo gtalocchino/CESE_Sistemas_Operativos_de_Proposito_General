@@ -23,7 +23,7 @@
 
 #include "SerialManager.h"
 
-#define SERIAL_READ_POLLING_PERIOD_US (500000u)
+#define SERIAL_READ_POLLING_PERIOD_US (100000u)
 #define TCP_PORT                      (10000u)
 #define IP_ADDRESS                    "127.0.0.1"
 
@@ -256,12 +256,12 @@ void tcp_to_serial(void) {
 
          if (read_bytes < 0) {
             perror("tcp_to_serial: read");
-            is_tcp_conn_open = false;
+            set_tcp_conn_open_flag(false);
          }
 
          if (read_bytes == 0) {
             puts("tcp_to_serial: connection closed");
-            is_tcp_conn_open = false;
+            set_tcp_conn_open_flag(false);
          }
 
          if (read_bytes > 0) {
@@ -290,7 +290,6 @@ void *serial_to_tcp(void *arg) {
       int read_bytes = serial_receive(read_buffer, sizeof(read_buffer));
 
       if (read_bytes == 0) {
-         puts("serial_to_tcp: serial connection closed");
          set_serial_conn_open(false);
       }
 
