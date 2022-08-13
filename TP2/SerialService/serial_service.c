@@ -1,8 +1,8 @@
 /**
  * @file serial_service.c
  * @author Gianfranco Talocchino (gftalocchino@gmail.com)
- * @brief 
- * @version 0.1
+ * @brief SOPG TP2
+ * @version 0.2
  * @date 2022-08-07
  * 
  * @copyright Copyright (c) 2022
@@ -15,6 +15,7 @@
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
+#include <signal.h>
 #include <pthread.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -22,29 +23,153 @@
 
 #include "SerialManager.h"
 
-#define SLEEP_TIME_SERIAL_MS (1000u)
+#define SERIAL_READ_POLLING_PERIOD_US (500000u)
+#define TCP_PORT                      (10000u)
+#define IP_ADDRESS                    "127.0.0.1"
+
 
 int listen_fd = -1;
 int conn_fd = -1;
+
 bool is_tcp_conn_open = false;
 bool is_serial_conn_open = false;
+bool is_running = true;
+
+pthread_t serial_to_tcp_thread;
+pthread_mutex_t mutex_serial_conn_open = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t mutex_tcp_conn_open = PTHREAD_MUTEX_INITIALIZER;
 
 
+bool read_tcp_conn_open_flag(void);
+void set_tcp_conn_open_flag(bool);
+bool read_serial_conn_open(void);
+void set_serial_conn_open(bool);
+void signal_handler(int);
+void init_signals(void);
+void mask_signals(int);
 void start_tcp_server(void);
+void start_serial(void);
 void launch_threads(void);
-void *tcp_to_serial(void *);
+void wait_threads_finish(void);
+void tcp_to_serial(void);
 void *serial_to_tcp(void *);
 
 
 int main(void) {
+   /* Setting up singnal handlers for SIGINT and SIGTERM. */
+   init_signals();
+
    puts("Starting serial service");
 
+   /* Opening serial port. */
+   start_serial();
 
+   /* Starting TCP server. */
    start_tcp_server();
 
-   launch_threads();   
+   /* Masking SIGINT and SIGTERM prior to launch threads. */
+   mask_signals(SIG_BLOCK);
+
+   /* Launching threads. */
+   launch_threads();
+
+   /* Unblock signals for this thread. */
+   mask_signals(SIG_UNBLOCK);
+
+   /* Calling TCP to serial loop. */
+   tcp_to_serial();
+
+   /* Waiting for the threadd to terminate. */
+   wait_threads_finish();
+
+   /*Closing serial port. */
+   serial_close();
+
+   puts("Threads terminated successfully");
 
    return EXIT_SUCCESS;
+}
+
+bool read_tcp_conn_open_flag(void) {
+   pthread_mutex_lock(&mutex_tcp_conn_open);
+   bool retval = is_tcp_conn_open ? true : false;
+   pthread_mutex_unlock(&mutex_tcp_conn_open);
+
+   return retval;
+}
+
+void set_tcp_conn_open_flag(bool value) {
+   pthread_mutex_lock(&mutex_tcp_conn_open);
+   is_tcp_conn_open = value;
+   pthread_mutex_unlock(&mutex_tcp_conn_open);
+}
+
+bool read_serial_conn_open(void) {
+   pthread_mutex_lock(&mutex_serial_conn_open);
+   bool retval = is_serial_conn_open ? true : false;
+   pthread_mutex_unlock(&mutex_serial_conn_open);
+
+   return retval;
+}
+
+void set_serial_conn_open(bool value) {
+   pthread_mutex_lock(&mutex_serial_conn_open);
+   is_serial_conn_open = value;
+   pthread_mutex_unlock(&mutex_serial_conn_open);
+}
+
+void signal_handler(int sig) {
+   char *signal_msg = (sig == SIGINT) ? "Received SIGINT\n" 
+                                      : "Received SIGTERM\n";                          
+   write(1, signal_msg, strlen(signal_msg));
+
+   char *finishing_msg = "Closing serial service...\n";
+   write(1, finishing_msg, strlen(finishing_msg));
+  
+   is_running = false;
+}
+
+void init_signals(void) {
+   /* Setting up the same singnal handler for SIGINT and SIGTERM. */
+   struct sigaction action = {.sa_handler = signal_handler};
+   
+   sigemptyset(&action.sa_mask);
+   
+   if (sigaction(SIGINT, &action, NULL) < 0) {
+      perror("SIGINT sigaction");
+      exit(EXIT_FAILURE);
+   }
+
+   if (sigaction(SIGTERM, &action, NULL) < 0) {
+      perror("SIGTERM sigaction");
+      exit(EXIT_FAILURE);
+   }
+}
+
+void mask_signals(int how) {
+   sigset_t set;
+
+   sigemptyset(&set);
+   sigaddset(&set, SIGTERM);
+   sigaddset(&set, SIGINT);
+    
+   int error = pthread_sigmask(how, &set, NULL);
+
+   if (error != 0) {
+      printf("pthread_sigmask: %s\n", strerror(error));
+      exit(EXIT_FAILURE);
+   }
+}
+
+void start_serial(void) {
+   puts("Opening serial port");
+
+   if(serial_open(1, 115200) != 0) {
+      puts("serial_open: error");
+      exit(EXIT_FAILURE);
+   }
+
+   set_serial_conn_open(true);
 }
 
 void start_tcp_server(void) {
@@ -59,10 +184,10 @@ void start_tcp_server(void) {
 
    struct sockaddr_in server = {
       .sin_family = AF_INET,
-      .sin_port = htons(10000)
+      .sin_port = htons(TCP_PORT)
    };
 
-   if (inet_pton(AF_INET, "127.0.0.1", &server.sin_addr) < 0) {
+   if (inet_pton(AF_INET, IP_ADDRESS, &server.sin_addr) < 0) {
       perror("inet_pton");
       exit(EXIT_FAILURE);
    }
@@ -81,104 +206,106 @@ void start_tcp_server(void) {
 void launch_threads(void) {
    puts("Launching threads");
 
-   pthread_t tcp_to_serial_thread;
-   pthread_t serial_to_tcp_thread;
+   int error = pthread_create(&serial_to_tcp_thread, NULL, serial_to_tcp, NULL);
 
-   pthread_create(&tcp_to_serial_thread, NULL, tcp_to_serial, NULL);
-   pthread_create(&serial_to_tcp_thread, NULL, serial_to_tcp, NULL);
-
-   pthread_join(tcp_to_serial_thread, NULL);
-	pthread_join(serial_to_tcp_thread, NULL);
+   if (error != 0) {
+      printf("pthread_create: serial_to_tcp: %s\n", strerror(error));
+      exit(EXIT_FAILURE);
+   }
 } 
 
-void *tcp_to_serial(void *arg) {
-   puts("Starting tcp to serial thread");
-   
-   while (1) {
+void wait_threads_finish(void) {
+   int error = pthread_cancel(serial_to_tcp_thread);
+
+  if (error != 0) {
+      printf("pthread_cancel: %s\n", strerror(error));
+      exit(EXIT_FAILURE);
+   }
+
+	error = pthread_join(serial_to_tcp_thread, NULL);
+
+   if (error != 0) {
+      printf("pthread_join: %s\n", strerror(error));
+      exit(EXIT_FAILURE);
+   }
+}
+
+void tcp_to_serial(void) {
+   puts("Running TCP to serial loop");
+
+   while (is_running) {
       struct sockaddr_in client = {0};
       socklen_t client_len = sizeof(client);
       
       puts("tcp_to_serial: waiting connection");
       conn_fd = accept(listen_fd, (struct sockaddr *) &client, &client_len);
 
-      char ip_client[32];
-      inet_ntop(AF_INET, &client.sin_addr, ip_client, sizeof(ip_client));
-      printf("tcp_to_serial: connection from: %s:%u\n", ip_client, ntohs(client.sin_port));
+      if (conn_fd < 0) {
+         set_tcp_conn_open_flag(false);
+         perror("tcp_to_serial: accept");
+      } else {
+         set_tcp_conn_open_flag(true);
+         char ip_client[24];
+         inet_ntop(AF_INET, &client.sin_addr, ip_client, sizeof(ip_client));
+         printf("tcp_to_serial: connection from: %s:%u\n", ip_client, ntohs(client.sin_port));
+      }
 
-      is_tcp_conn_open = true;
-
-      while (1) {
+      while (read_tcp_conn_open_flag()) {
          char read_buffer[32];
          ssize_t read_bytes = read(conn_fd, read_buffer, sizeof(read_buffer));
 
          if (read_bytes < 0) {
             perror("tcp_to_serial: read");
-            close(conn_fd);
             is_tcp_conn_open = false;
-            break;
          }
 
          if (read_bytes == 0) {
             puts("tcp_to_serial: connection closed");
-            close(conn_fd);
             is_tcp_conn_open = false;
-            break;
          }
 
-         read_buffer[read_bytes] = 0;
-         printf("tcp_to_serial: TCP -> serial: %s", read_buffer);
-               
-         if (is_serial_conn_open) {
-            serial_send(read_buffer, read_bytes);
-         } else {
-            puts("tcp_to_serial: serial connection is not open");
+         if (read_bytes > 0) {
+            read_buffer[read_bytes] = 0;
+            printf("tcp_to_serial: TCP -> serial: %s", read_buffer);
+                  
+            if (read_serial_conn_open()) {
+               serial_send(read_buffer, read_bytes);
+            } else {
+               puts("tcp_to_serial: serial connection is not open");
+            }
          }
-      } 
+      }
+
+      close(conn_fd);
    }
 
-   return NULL;
+   puts("Finishing TCP to serial loop");
 }
 
 void *serial_to_tcp(void *arg) {
    puts("Starting serial to tcp thread");
-   
 
    while (1) {
-      if(serial_open(1, 115200) != 0) {
-         puts("serial_to_tcp: serial_open error");
-         usleep(SLEEP_TIME_SERIAL_MS);
-         continue;
+      char read_buffer[32];
+      int read_bytes = serial_receive(read_buffer, sizeof(read_buffer));
+
+      if (read_bytes == 0) {
+         puts("serial_to_tcp: serial connection closed");
+         set_serial_conn_open(false);
       }
 
-      is_serial_conn_open = true;
-
-      while (1) {
-         char read_buffer[32];
-         int read_bytes = serial_receive(read_buffer, sizeof(read_buffer));
-
-         if (read_bytes == 0) {
-            puts("serial_to_tcp: serial connection closed");
-            serial_close();
-            is_serial_conn_open = false;
-            break;
-         }
-
-         if (read_bytes < 0) {
-            usleep(SLEEP_TIME_SERIAL_MS);
-            continue;
-         }
-
+      if (read_bytes > 0) {
          read_buffer[read_bytes] = 0;
          printf("serial_to_tcp: serial -> TCP: %s", read_buffer);
-         
-         if (is_tcp_conn_open) {
+
+         if (read_tcp_conn_open_flag()) {
             write(conn_fd, read_buffer, strlen(read_buffer));
          } else {
             puts("serial_to_tcp: TCP connection is not open");
          }
-
-         usleep(SLEEP_TIME_SERIAL_MS);
       }
+      
+      usleep(SERIAL_READ_POLLING_PERIOD_US);
    }
 
    return NULL;
